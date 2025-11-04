@@ -32,7 +32,7 @@ end
 local function findMineColoniesPeripheral()
     local candidates = {}
     local wantMethods = {
-        "getWorkOrders", "getWorkOrder", "getWorkOrderRequirements", "getRequirements", "getMaterials",
+        "getWorkOrders", "getWorkOrder", "getWorkOrderResources", "getWorkOrderRequirements", "getRequirements", "getMaterials",
         "getBuildingWorkOrders", "getBuildings", "getBuilding"
     }
     for _, name in ipairs(peripheral.getNames()) do
@@ -196,6 +196,8 @@ local function getBuilderWorkOrderRequirements(peripheralWrapper)
 
     -- try peripheral methods that return requirements
     local reqMethods = {
+        -- prefer the Advanced Peripherals method name that returns work order resources
+        function() return safeCall(peripheralWrapper, "getWorkOrderResources", selected.id or selected.uuid or buildingId) end,
         function() return safeCall(peripheralWrapper, "getWorkOrderRequirements", selected.id or selected.uuid or buildingId) end,
         function() return safeCall(peripheralWrapper, "getRequirements", selected.id or selected.uuid or buildingId) end,
         function() return safeCall(peripheralWrapper, "getMaterials", selected.id or selected.uuid or buildingId) end,
