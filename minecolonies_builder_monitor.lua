@@ -1,113 +1,89 @@
 -- Monitor + MineColonies work order materials display for Advanced Peripherals (ComputerCraft)
+local term = rawget(_G, "term")
+local peripheral = rawget(_G, "peripheral")
+local textutils = rawget(_G, "textutils")
 
-local term = term
-local peripheral = peripheral
-local textutils = textutils
+--
+-- minecolonies_builder_monitor.lua
+-- Simplified monitor that uses Advanced Peripherals' getWorkOrderResources
+-- Assumptions: The MineColonies/AdvancedPeripherals peripheral exposes
+-- the method getWorkOrderResources(...). This script first tries
+-- calling getWorkOrderResources() with no args. If that returns nil,
+-- it will attempt to find a work order id via getWorkOrders() and
+-- call getWorkOrderResources(id). Output is printed to a wrapped CC
+-- monitor if available, otherwise to the terminal.
+--
 
 -- helper: safe call if method exists
 local function safeCall(per, name, ...)
-    if not per or type(per[name]) ~= "function" then return nil, "no_method" end
+    if not per then return nil, "no_peripheral" end
+    local methods = peripheral.getMethods and peripheral.getMethods(peripheral.getName and peripheral.getName(per) or "")
+    -- If wrapped object has method, call it, otherwise try pcall access
+    if type(per[name]) ~= "function" then
+        return nil, "no_method"
+    end
     local ok, res = pcall(per[name], per, ...)
     if not ok then return nil, res end
     return res
 end
 
--- find a monitor, prefer a wrapped peripheral named "monitor"
+-- find a monitor peripheral (wrapped)
 local function getMonitor()
-    local mon = peripheral.find("monitor")
-    if not mon then
-        -- try scanning all peripherals for type "monitor"
-        for _, pName in ipairs(peripheral.getNames()) do
-            local t = peripheral.getType(pName)
-            if t == "monitor" then
-                mon = peripheral.wrap(pName)
-                break
-            end
-        end
-    end
-    return mon
-end
-
--- find a MineColonies/Advanced Peripheral-like peripheral by looking for common method names
-local function findMineColoniesPeripheral()
-    local candidates = {}
-    local wantMethods = {
-        "getWorkOrders", "getWorkOrder", "getWorkOrderResources", "getWorkOrderRequirements", "getRequirements", "getMaterials",
-        "getBuildingWorkOrders", "getBuildings", "getBuilding"
-    }
+    local mon = peripheral.find and peripheral.find("monitor")
+    if mon then return mon end
     for _, name in ipairs(peripheral.getNames()) do
-        local methods = peripheral.getMethods(name)
-        local ok = false
-        for _, m in ipairs(wantMethods) do
-            for _, pm in ipairs(methods) do
-                if pm == m then ok = true; break end
-            end
-            if ok then break end
-        end
-        if ok then
-            table.insert(candidates, name)
+        if peripheral.getType(name) == "monitor" then
+            return peripheral.wrap(name)
         end
     end
-
-    if #candidates == 0 then
-        -- fallback: return first peripheral that has any of the methods when wrapped (try a few)
-        for _, name in ipairs(peripheral.getNames()) do
-            local wrapped = peripheral.wrap(name)
-            local methods = peripheral.getMethods(name)
-            for _, m in ipairs(wantMethods) do
-                for _, pm in ipairs(methods) do
-                    if pm == m then
-                        return wrapped, name
-                    end
-                end
-            end
-        end
-        return nil, nil
-    end
-
-    -- prefer the first candidate
-    local chosenName = candidates[1]
-    return peripheral.wrap(chosenName), chosenName
+    return nil
 end
 
--- draw lines on monitor safely
+-- find a peripheral that exposes getWorkOrderResources
+local function findResourcesPeripheral()
+    for _, name in ipairs(peripheral.getNames()) do
+        local methods = peripheral.getMethods(name) or {}
+        for _, m in ipairs(methods) do
+            if m == "getWorkOrderResources" then
+                return peripheral.wrap(name), name
+            end
+        end
+    end
+    -- fallback: try to wrap first peripheral and test method existence
+    for _, name in ipairs(peripheral.getNames()) do
+        local wrapped = peripheral.wrap(name)
+        if wrapped and type(wrapped.getWorkOrderResources) == "function" then
+            return wrapped, name
+        end
+    end
+    return nil, nil
+end
+
+-- write lines to monitor, wrapping by width; if no monitor, print to terminal
 local function printToMonitor(mon, lines)
     if not mon then
-        print("No monitor attached. Output to terminal:")
         for _, l in ipairs(lines) do print(l) end
         return
     end
 
-    -- set up monitor
     local w, h = mon.getSize()
-    -- some monitors don't support setTextScale; don't overwrite method if absent
-    -- prepare wrapped lines so long text will flow to next monitor row instead of truncating
-    local function wrapLine(str, width)
+    local function wrapLine(str)
         str = tostring(str or "")
-        if width <= 0 then return {str} end
+        if w <= 0 then return {str} end
         local out = {}
         while #str > 0 do
-            if #str <= width then
-                table.insert(out, str)
-                break
-            end
-            -- try to break at last space within width
-            local sub = str:sub(1, width)
+            if #str <= w then table.insert(out, str); break end
+            local sub = str:sub(1, w)
             local splitAt
             for i = #sub, 1, -1 do
-                if sub:sub(i,i):match("%s") then
-                    splitAt = i
-                    break
-                end
+                if sub:sub(i, i):match("%s") then splitAt = i; break end
             end
             if splitAt and splitAt > 1 then
-                table.insert(out, (sub:sub(1, splitAt-1)))
-                -- trim leading spaces from remainder
+                table.insert(out, sub:sub(1, splitAt-1))
                 str = str:sub(splitAt+1)
             else
-                -- no space found, hard break
                 table.insert(out, sub)
-                str = str:sub(width+1)
+                str = str:sub(w+1)
             end
         end
         return out
@@ -115,173 +91,108 @@ local function printToMonitor(mon, lines)
 
     local wrapped = {}
     for _, l in ipairs(lines) do
-        local wlines = wrapLine(l, w)
-        for _, wl in ipairs(wlines) do table.insert(wrapped, wl) end
+        for _, part in ipairs(wrapLine(l)) do table.insert(wrapped, part) end
     end
 
     mon.clear()
-    mon.setCursorPos(1,1)
+    mon.setCursorPos(1, 1)
     for row = 1, h do
         local text = wrapped[row] or ""
-        -- ensure we don't write past edge; mon.write may keep cursor, so set pos each time
         if #text > w then text = text:sub(1, w) end
         mon.setCursorPos(1, row)
         mon.write(text)
     end
 end
 
--- attempt multiple possible API signatures to obtain work orders and requirements
-local function getBuilderWorkOrderRequirements(peripheralWrapper)
-    -- try to get buildings and pick a builder building if present
-    local buildings, err = safeCall(peripheralWrapper, "getBuildings")
-    local buildingId
-    if buildings and type(buildings) == "table" then
-        for _, b in ipairs(buildings) do
-            -- heuristics: structure type or role may include "builder"
-            if (b.type and tostring(b.type):lower():find("builder")) or (b.role and tostring(b.role):lower():find("builder")) then
-                buildingId = b.id or b.uuid or b.name or b.position or b.index
-                break
+-- Try to obtain resources using getWorkOrderResources only (preferred)
+local function getResources(per)
+    -- 1) try calling without args
+    local res, err = safeCall(per, "getWorkOrderResources")
+    if res and type(res) == "table" and next(res) ~= nil then
+        return res, nil
+    end
+
+    -- 2) try to find a work order id and call with that id
+    local wos = safeCall(per, "getWorkOrders")
+    if wos and type(wos) == "table" and #wos > 0 then
+        -- pick active if present
+        local chosen = wos[1]
+        for _, wo in ipairs(wos) do
+            if wo.status and tostring(wo.status):lower():find("active") then chosen = wo; break end
+        end
+        local id = chosen.id or chosen.uuid or chosen.workOrderId or chosen.name
+        if id then
+            local res2, err2 = safeCall(per, "getWorkOrderResources", id)
+            if res2 and type(res2) == "table" and next(res2) ~= nil then
+                return res2, nil
+            else
+                return nil, err2 or "no_resources_returned"
             end
         end
     end
 
-    -- if we didn't get a builder building, let user choose from getBuildings list or ask for id
-    if not buildingId and buildings and type(buildings) == "table" and #buildings > 0 then
-        -- pick first by default
-        buildingId = buildings[1].id or buildings[1].uuid or buildings[1].name or 1
-    end
-
-    -- attempt several methods to get work orders
-    local workOrders
-    local tryList = {
-        function() return safeCall(peripheralWrapper, "getBuildingWorkOrders", buildingId) end,
-        function() return safeCall(peripheralWrapper, "getWorkOrders", buildingId) end,
-        function() return safeCall(peripheralWrapper, "getWorkOrders") end,
-        function() return safeCall(peripheralWrapper, "getWorkOrder", buildingId) end
-    }
-
-    for _, try in ipairs(tryList) do
-        local res, e = try()
-        if res and type(res) == "table" then
-            workOrders = res
-            break
-        end
-    end
-
-    -- If workOrders is a single work order table rather than a list, normalize
-    if workOrders and not workOrders[1] and type(workOrders) == "table" then
-        -- maybe it's a single work order or a map
-        local t = {}
-        table.insert(t, workOrders)
-        workOrders = t
-    end
-
-    if not workOrders then
-        return nil, "no_workorders", { buildings = buildings, err = err }
-    end
-
-    -- pick first active or first entry
-    local selected = workOrders[1]
-    for _, wo in ipairs(workOrders) do
-        if wo.status and tostring(wo.status):lower():find("active") then
-            selected = wo
-            break
-        end
-    end
-
-    -- try to get requirements from workorder object if present
-    if selected and selected.requirements and type(selected.requirements) == "table" then
-        return selected.requirements, nil, { workOrder = selected }
-    end
-
-    -- try peripheral methods that return requirements
-    local reqMethods = {
-        -- prefer the Advanced Peripherals method name that returns work order resources
-        function() return safeCall(peripheralWrapper, "getWorkOrderResources", selected.id or selected.uuid or buildingId) end,
-        function() return safeCall(peripheralWrapper, "getWorkOrderRequirements", selected.id or selected.uuid or buildingId) end,
-        function() return safeCall(peripheralWrapper, "getRequirements", selected.id or selected.uuid or buildingId) end,
-        function() return safeCall(peripheralWrapper, "getMaterials", selected.id or selected.uuid or buildingId) end,
-        function() return safeCall(peripheralWrapper, "getWorkOrderMaterials", selected.id or selected.uuid or buildingId) end
-    }
-
-    for _, f in ipairs(reqMethods) do
-        local res, e = f()
-        if res and type(res) == "table" then
-            return res, nil, { workOrder = selected }
-        end
-    end
-
-    return nil, "no_requirements", { workOrder = selected }
+    return nil, err or "no_resources"
 end
 
--- format requirements table into printable lines
-local function formatRequirements(req)
-    local lines = {}
-    table.insert(lines, "Materials required:")
-    if not req or next(req) == nil then
+-- Format resources into printable lines. Supports several shapes:
+--  - array of {item = {id=...} or name=..., count=...}
+--  - array of {name=..., count=...}
+--  - map of name->count
+local function formatResources(res)
+    local lines = {"Materials required:"}
+    if not res or next(res) == nil then
         table.insert(lines, "  (none or unknown format)")
         return lines
     end
 
-    -- expected formats:
-    -- 1) list of {name = "minecraft:stone", count = 64}
-    -- 2) list of {item = {id="minecraft:stone"}, count = 64}
-    -- 3) map name->count
-    for i, v in ipairs(req) do
-        if type(v) == "table" then
-            local name = v.name or (v.item and (v.item.name or v.item.id)) or v.id or v.key
-            local count = v.count or v.amount or v.qty or v.quantity
-            name = tostring(name or ("item"..(i)))
-            count = tostring(count or "?")
-            table.insert(lines, string.format("  - %s : %s", name, count))
-        else
-            table.insert(lines, "  - " .. tostring(v))
+    -- if array-like
+    if #res > 0 then
+        for i, v in ipairs(res) do
+            if type(v) == "table" then
+                local name = v.name or (v.item and (v.item.id or v.item.name)) or v.id or v.key
+                local count = v.count or v.amount or v.qty or v.quantity
+                name = tostring(name or ("item" .. i))
+                count = tostring(count or "?")
+                table.insert(lines, string.format("  - %s : %s", name, count))
+            else
+                table.insert(lines, "  - " .. tostring(v))
+            end
         end
+        return lines
     end
 
-    -- if table was a map (non-array)
-    if #req == 0 then
-        for k, v in pairs(req) do
-            table.insert(lines, string.format("  - %s : %s", tostring(k), tostring(v)))
-        end
+    -- otherwise treat as map
+    for k, v in pairs(res) do
+        table.insert(lines, string.format("  - %s : %s", tostring(k), tostring(v)))
     end
-
     return lines
 end
 
 -- Main
 local function main()
     local mon = getMonitor()
-    local mcPeripheral, mcName = findMineColoniesPeripheral()
-
-    if not mcPeripheral then
-        local lines = {
-            "MineColonies peripheral not found.",
-            "Peripherals found: " .. textutils.serialize(peripheral.getNames()),
-            "Make sure Advanced Peripherals addon for MineColonies is attached.",
-            "Script will print debug data to terminal."
-        }
-        printToMonitor(mon, lines)
-        print(textutils.serialize(peripheral.getNames()))
-        return
-    end
-
-    local lines = { "Using MineColonies peripheral: " .. tostring(mcName) }
-    printToMonitor(mon, lines)
-
-    local reqs, err, debug = getBuilderWorkOrderRequirements(mcPeripheral)
-    if not reqs then
+    local per, name = findResourcesPeripheral()
+    if not per then
         local out = {
-            "Could not determine requirements.",
-            "Error: " .. tostring(err),
-            "Debug: " .. textutils.serialize(debug)
+            "MineColonies resources peripheral not found.",
+            "Peripherals: " .. textutils.serialize(peripheral.getNames()),
+            "Ensure Advanced Peripherals (colony integrator) is attached."
         }
         printToMonitor(mon, out)
         return
     end
 
-    local formatted = formatRequirements(reqs)
-    printToMonitor(mon, formatted)
+    local header = {"Using peripheral: " .. tostring(name)}
+    printToMonitor(mon, header)
+
+    local res, err = getResources(per)
+    if not res then
+        printToMonitor(mon, {"Could not get resources:", tostring(err)})
+        return
+    end
+
+    local lines = formatResources(res)
+    printToMonitor(mon, lines)
 end
 
 main()
