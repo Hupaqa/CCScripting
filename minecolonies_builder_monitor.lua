@@ -115,18 +115,29 @@ local function getResources(per)
     -- 2) try to find a work order id and call with that id
     local wos = safeCall(per, "getWorkOrders")
     if wos and type(wos) == "table" and #wos > 0 then
-        -- pick active if present
+        -- pick active if present; also remember numeric index
         local chosen = wos[1]
-        for _, wo in ipairs(wos) do
-            if wo.status and tostring(wo.status):lower():find("active") then chosen = wo; break end
+        local chosenIndex = 1
+        for i, wo in ipairs(wos) do
+            if wo.status and tostring(wo.status):lower():find("active") then chosen = wo; chosenIndex = i; break end
         end
-        local id = chosen.id or chosen.uuid or chosen.workOrderId or chosen.name
-        if id then
-            local res2, err2 = safeCall(per, "getWorkOrderResources", id)
+
+        -- Prefer calling with numeric index (many AP integrations expect a number)
+        if chosenIndex and type(chosenIndex) == "number" then
+            local res2, err2 = safeCall(per, "getWorkOrderResources", chosenIndex)
             if res2 and type(res2) == "table" and next(res2) ~= nil then
                 return res2, nil
+            end
+        end
+
+        -- If numeric attempt failed, try known id fields but ensure we don't pass a table
+        local idCandidate = chosen.id or chosen.uuid or chosen.workOrderId or chosen.name
+        if idCandidate and type(idCandidate) ~= "table" then
+            local res3, err3 = safeCall(per, "getWorkOrderResources", idCandidate)
+            if res3 and type(res3) == "table" and next(res3) ~= nil then
+                return res3, nil
             else
-                return nil, err2 or "no_resources_returned"
+                return nil, err3 or "no_resources_returned"
             end
         end
     end
