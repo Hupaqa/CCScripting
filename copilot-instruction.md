@@ -1,0 +1,2 @@
+Consider this https://docs.advanced-peripherals.de/0.8/peripherals/colony_integrator/#getworkorderresources everytime you generate code in this repository.
+No need to be second guessing which API function are available.
