@@ -80,14 +80,53 @@ local function printToMonitor(mon, lines)
 
     -- set up monitor
     local w, h = mon.getSize()
-    mon.setTextScale = mon.setTextScale or function() end -- some monitors may not support scaling
+    -- some monitors don't support setTextScale; don't overwrite method if absent
+    -- prepare wrapped lines so long text will flow to next monitor row instead of truncating
+    local function wrapLine(str, width)
+        str = tostring(str or "")
+        if width <= 0 then return {str} end
+        local out = {}
+        while #str > 0 do
+            if #str <= width then
+                table.insert(out, str)
+                break
+            end
+            -- try to break at last space within width
+            local sub = str:sub(1, width)
+            local splitAt
+            for i = #sub, 1, -1 do
+                if sub:sub(i,i):match("%s") then
+                    splitAt = i
+                    break
+                end
+            end
+            if splitAt and splitAt > 1 then
+                table.insert(out, (sub:sub(1, splitAt-1)))
+                -- trim leading spaces from remainder
+                str = str:sub(splitAt+1)
+            else
+                -- no space found, hard break
+                table.insert(out, sub)
+                str = str:sub(width+1)
+            end
+        end
+        return out
+    end
+
+    local wrapped = {}
+    for _, l in ipairs(lines) do
+        local wlines = wrapLine(l, w)
+        for _, wl in ipairs(wlines) do table.insert(wrapped, wl) end
+    end
+
     mon.clear()
     mon.setCursorPos(1,1)
-    for i = 1, h do
-        local line = lines[i] or ""
-        if #line > w then line = line:sub(1, w) end
-        mon.setCursorPos(1, i)
-        mon.write(line)
+    for row = 1, h do
+        local text = wrapped[row] or ""
+        -- ensure we don't write past edge; mon.write may keep cursor, so set pos each time
+        if #text > w then text = text:sub(1, w) end
+        mon.setCursorPos(1, row)
+        mon.write(text)
     end
 end
 
